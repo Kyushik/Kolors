@@ -702,6 +702,9 @@ def encode_prompt(text_encoder, input_ids, attention_mask, text_encoder_use_atte
 
     return prompt_embeds
 
+def handle_remove_error(func, path, exc_info):
+    print(f"Error removing {path}: {exc_info}")
+    
 class SuperModel(nn.Module):
     def __init__(self, unet, text_encoder):
         super(SuperModel, self).__init__()
@@ -724,6 +727,8 @@ def main(args):
         if not is_wandb_available():
             raise ImportError("Make sure to install wandb if you want to use it for logging during training.")
         import wandb
+        # Initialize wandb
+        wandb.init(project="kolors", config=args, name="lora_finetuning")
 
     # Currently, it's not possible to do gradient accumulation when training two models with accelerate.accumulate
     # This will be enabled soon in accelerate. For now, we don't allow gradient accumulation when training two models.
@@ -922,7 +927,24 @@ def main(args):
             unet_lora_layers_to_save = None
             unet_lora_layers_to_save = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrap_model(models[0])))
             StableDiffusionXLPipeline.save_lora_weights(output_dir,unet_lora_layers=unet_lora_layers_to_save)
-
+    
+    def save_lora_weights_as_safetensors(model, output_dir):
+        # Ensure the output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Extract LoRA weights from unet
+        unet_lora_weights = get_peft_model_state_dict(model.unet)
+        
+        # Save the unet LoRA weights as a .safetensors file
+        save_file(unet_lora_weights, os.path.join(output_dir, "unet_lora.safetensors"))
+        print(f"Saved unet LoRA weights to {os.path.join(output_dir, 'unet_lora.safetensors')}")
+        
+        # Extract LoRA weights from text_encoder if available
+        if text_encoder is not None:
+            text_encoder_lora_weights = get_peft_model_state_dict(model.text_encoder)
+            save_file(text_encoder_lora_weights, os.path.join(output_dir, "text_encoder_lora.safetensors"))
+            print(f"Saved text_encoder LoRA weights to {os.path.join(output_dir, 'text_encoder_lora.safetensors')}")
+            
     def load_model_hook(models, input_dir):
         unet_ = accelerator.unwrap_model(unet)
         lora_state_dict, _ = LoraLoaderMixin.lora_state_dict(input_dir)
@@ -1154,6 +1176,8 @@ def main(args):
         disable=not accelerator.is_local_main_process,
     )
 
+    loss_list = []
+    
     for epoch in range(first_epoch, args.num_train_epochs):
         super_model.unet.train()
         if args.train_text_encoder:
@@ -1282,19 +1306,39 @@ def main(args):
 
                                 for removing_checkpoint in removing_checkpoints:
                                     removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                    shutil.rmtree(removing_checkpoint)
+                                    shutil.rmtree(removing_checkpoint, onerror=handle_remove_error)
 
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
+                        # accelerator.save_state(save_path)
+                        # accelerator.save_model(super_model, save_path)
+                        save_lora_weights_as_safetensors(super_model, save_path)
                         logger.info(f"Saved state to {save_path}")
 
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
-            progress_bar.set_postfix(**logs)
-            accelerator.log(logs, step=global_step)
-
+            loss_list.append(loss.detach().item())
+            
+            # Log mean loss and learning rate every 10 steps
+            if global_step % 10 == 0 and global_step != 0:
+                mean_loss = np.mean(loss_list)
+                current_lr = lr_scheduler.get_last_lr()[0]
+                logs = {"mean_loss": mean_loss, "learning_rate": current_lr}
+                progress_bar.set_postfix(**logs)
+    
+                # Log to wandb
+                if args.report_to == "wandb":
+                    wandb.log(logs, step=global_step)
+    
+                # Reset loss list after logging
+                loss_list = []
+    
             if global_step >= args.max_train_steps:
                 break
 
+    # Close wandb run at the end
+    if args.report_to == "wandb":
+        wandb.finish()
+
+    save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+    save_lora_weights_as_safetensors(super_model, save_path)
     accelerator.end_training()
     exit()
 
