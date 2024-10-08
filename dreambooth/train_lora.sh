@@ -1,6 +1,6 @@
 MODEL_NAME="./weights/Kolors"
 INSTANCE_DIR='dataset/EkuUekura'
-OUTPUT_DIR="./trained_models/EkuUekura_lora"
+OUTPUT_DIR="./trained_models/EkuUekura_lora_noTextTrain_1024"
 cfg_file=dreambooth/default_config.yaml
 
 accelerate launch --config_file ${cfg_file} dreambooth/train.py \
@@ -11,12 +11,11 @@ accelerate launch --config_file ${cfg_file} dreambooth/train.py \
     --instance_prompt=""\
     --train_batch_size=8 \
     --gradient_accumulation_steps=1 \
-    --learning_rate=5e-5 \
-    --text_encoder_lr=5e-5 \
+    --learning_rate=1e-4 \
     --lr_scheduler="polynomial" \
     --lr_warmup_steps=500 \
     --rank=16 \
-    --resolution=768 \
+    --resolution=1024 \
     --max_train_steps=5000 \
     --checkpointing_steps=1000 \
     --center_crop \
@@ -26,6 +25,5 @@ accelerate launch --config_file ${cfg_file} dreambooth/train.py \
     --sample_batch_size=2 \
     --gradient_checkpointing \
     --adam_weight_decay=1e-02 \
-    --train_text_encoder \
     --checkpoints_total_limit=1\
     --report_to="wandb"
