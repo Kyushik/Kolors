@@ -1,16 +1,16 @@
-MODEL_NAME="/path/base_model_path"
-INSTANCE_DIR='dog'
-CLASS_DIR="reg_dog"
-OUTPUT_DIR="trained_models/ktxl_dog_text"
-cfg_file=./default_config.yaml
+MODEL_NAME="./weights/Kolors"
+INSTANCE_DIR='dataset/dog'
+CLASS_DIR="classes/class_dog"
+OUTPUT_DIR="trained_models/dreambooth_dog"
+cfg_file=./dreambooth/default_config.yaml
 
-accelerate launch --config_file ${cfg_file} train_dreambooth_lora.py \
+accelerate launch --config_file ${cfg_file} dreambooth/train.py \
     --pretrained_model_name_or_path=$MODEL_NAME  \
     --instance_data_dir=$INSTANCE_DIR \
     --output_dir=$OUTPUT_DIR \
     --class_data_dir=$CLASS_DIR \
-    --instance_prompt="ktxl狗" \
-    --class_prompt="狗" \
+    --instance_prompt="ktxl_dog" \
+    --class_prompt="dog" \
     --train_batch_size=1 \
     --gradient_accumulation_steps=1 \
     --learning_rate=2e-5 \
@@ -32,3 +32,4 @@ accelerate launch --config_file ${cfg_file} train_dreambooth_lora.py \
     --with_prior_preservation  \
     --prior_loss_weight=0.7 \
     --train_text_encoder \
+    --train_lora 
