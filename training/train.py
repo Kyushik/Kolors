@@ -23,6 +23,7 @@ import math
 import os
 import shutil
 import warnings
+import json
 from pathlib import Path
 
 import numpy as np
@@ -129,8 +130,8 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--instance_prompt",
         type=str,
-        default=None,
-        required=True,
+        default="",
+        required=False,
         help="The prompt with identifier specifying the instance",
     )
     parser.add_argument(
@@ -179,7 +180,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="lora-dreambooth-model",
+        default="trained_model",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
@@ -424,7 +425,11 @@ def parse_args(input_args=None):
         default=5e-6,
         help="Text encoder learning rate to use.",
     )
-
+    parser.add_argument(
+        "--train_lora",
+        action="store_true", help="Whether to train model with lora"
+    )
+    
     if input_args is not None:
         args = parser.parse_args(input_args)
     else:
@@ -471,7 +476,7 @@ def get_pipe(ckpt_dir):
     return pipe
 
 
-class DreamBoothDataset(Dataset):
+class KolorsDataset(Dataset):
     """
     A dataset to prepare the instance and class images with the prompts for fine-tuning the model.
     It pre-processes the images and the tokenizes prompts.
@@ -846,11 +851,16 @@ def main(args):
         print(f'init from unet_id {args.unet_id}!!!')
     
     # We only train the additional adapter LoRA layers
-    if vae is not None:
-        vae.requires_grad_(False)
-    text_encoder.requires_grad_(False)
-    unet.requires_grad_(False)
-
+    if args.train_lora:
+        if vae is not None:
+            vae.requires_grad_(False)
+        text_encoder.requires_grad_(False)
+        unet.requires_grad_(False)
+    else: 
+        if not args.train_text_encoder:
+            text_encoder.requires_grad_(False)
+    
+    
     # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora unet) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
     weight_dtype = torch.float32
@@ -884,24 +894,24 @@ def main(args):
         if args.train_text_encoder:
             text_encoder.gradient_checkpointing_enable()
 
-
-    unet_lora_config = LoraConfig(
-        r=args.rank,
-        lora_alpha=args.rank,
-        init_lora_weights="gaussian",
-        target_modules=["to_k", "to_q", "to_v", "to_out.0"],
-    )
-    unet.add_adapter(unet_lora_config)
-
-    if args.train_text_encoder:
-        text_lora_config = LoraConfig(
+    if args.train_lora:
+        unet_lora_config = LoraConfig(
             r=args.rank,
             lora_alpha=args.rank,
             init_lora_weights="gaussian",
-            target_modules=["query_key_value"],
+            target_modules=["to_k", "to_q", "to_v", "to_out.0"],
         )
-        text_encoder = get_peft_model(text_encoder, text_lora_config)
-        text_encoder.print_trainable_parameters()
+        unet.add_adapter(unet_lora_config)
+    
+        if args.train_text_encoder:
+            text_lora_config = LoraConfig(
+                r=args.rank,
+                lora_alpha=args.rank,
+                init_lora_weights="gaussian",
+                target_modules=["query_key_value"],
+            )
+            text_encoder = get_peft_model(text_encoder, text_lora_config)
+            text_encoder.print_trainable_parameters()
 
     def unwrap_model(model):
         model = accelerator.unwrap_model(model)
@@ -915,24 +925,42 @@ def main(args):
             unet = unwrap_model(models.unet)
             text_encoder = unwrap_model(models.text_encoder)
     
-            # Convert the LoRA weights of the UNet to the diffusers format
-            unet_lora_layers_to_save = convert_state_dict_to_diffusers(get_peft_model_state_dict(unet))
+            if args.train_lora:
+                # Convert the LoRA weights of the UNet to the diffusers format
+                unet_lora_layers_to_save = convert_state_dict_to_diffusers(get_peft_model_state_dict(unet))
     
+                # Save the LoRA weights for the UNet
+                StableDiffusionXLPipeline.save_lora_weights(output_dir, unet_lora_layers=unet_lora_layers_to_save)
+    
+            else:
+                # Save the full model weights (UNet and Text Encoder)
+                unet.save_pretrained(output_dir)
+
             # Save the text encoder
             text_encoder.save_pretrained(output_dir)
-    
-            # Save the LoRA weights for the UNet
-            StableDiffusionXLPipeline.save_lora_weights(output_dir, unet_lora_layers=unet_lora_layers_to_save)
     
 
     def save_model_hook_no_text(models, output_dir):
         #Save only unet LoRA weights
         if accelerator.is_main_process:
-            # there are only two options here. Either are just the unet attn processor layers
-            # or there are the unet and text encoder attn layers
-            unet_lora_layers_to_save = None
-            unet_lora_layers_to_save = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrap_model(models[0])))
-            StableDiffusionXLPipeline.save_lora_weights(output_dir,unet_lora_layers=unet_lora_layers_to_save)
+            unet = unwrap_model(models.unet)
+                
+            if args.train_lora:
+                # Convert the LoRA weights of the UNet to the diffusers format
+                unet_lora_layers_to_save = convert_state_dict_to_diffusers(get_peft_model_state_dict(unet))
+                StableDiffusionXLPipeline.save_lora_weights(output_dir, unet_lora_layers=unet_lora_layers_to_save)
+
+                # Save the adapter.json (LoRA configuration)
+                lora_config = models.unet.peft_config['default'].to_dict() 
+
+                lora_config['target_modules'] = list(lora_config['target_modules'])
+                lora_config['peft_type'] = str(lora_config['peft_type'].value) 
+            
+                with open(f"{output_dir}/adapter_config.json", "w") as f:
+                    json.dump(lora_config, f, indent=2)
+            else:
+                # Save the full UNet model weights
+                unet.save_pretrained(output_dir)
     
     def load_model_hook(models, input_dir):
         unet_ = accelerator.unwrap_model(unet)
@@ -983,28 +1011,48 @@ def main(args):
 
 
     super_model = SuperModel(unet=unet, text_encoder=text_encoder)
-    unet_lora_parameters = list(filter(lambda p: p.requires_grad, super_model.unet.parameters()))
 
-    if args.train_text_encoder:
-        text_lora_parameters = list(filter(lambda p: p.requires_grad, super_model.text_encoder.parameters()))
-
-    # Optimization parameters
-    unet_lora_parameters_with_lr = {"params": unet_lora_parameters, "lr": args.learning_rate}
+    if args.train_lora:
+        unet_lora_parameters = list(filter(lambda p: p.requires_grad, super_model.unet.parameters()))
     
-    if args.train_text_encoder:
-        # different learning rate for text encoder and unet
-        text_lora_parameters_with_lr = {
-            "params": text_lora_parameters,
-            "weight_decay": args.adam_weight_decay_text_encoder,
-            "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate,
-        }
-        params_to_optimize = [
-            unet_lora_parameters_with_lr,
-            text_lora_parameters_with_lr,
-        ]
+        # Optimization parameters
+        unet_lora_parameters_with_lr = {"params": unet_lora_parameters, "lr": args.learning_rate}
+        
+        if args.train_text_encoder:
+            text_lora_parameters = list(filter(lambda p: p.requires_grad, super_model.text_encoder.parameters()))
+            
+            # different learning rate for text encoder and unet
+            text_lora_parameters_with_lr = {
+                "params": text_lora_parameters,
+                "weight_decay": args.adam_weight_decay_text_encoder,
+                "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate,
+            }
+            params_to_optimize = [
+                unet_lora_parameters_with_lr,
+                text_lora_parameters_with_lr,
+            ]
+        else:
+            params_to_optimize = [unet_lora_parameters_with_lr]
     else:
-        params_to_optimize = [unet_lora_parameters_with_lr]
+        unet_parameters = list(super_model.unet.parameters())
+        unet_parameters_with_lr = {"params": unet_parameters, "lr": args.learning_rate}
 
+        if args.train_text_encoder:
+            text_parameters = list(super_model.text_encoder.parameters())
+            
+            # different learning rate for text encoder and unet
+            text_parameters_with_lr = {
+                "params": text_parameters,
+                "weight_decay": args.adam_weight_decay_text_encoder,
+                "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate,
+            }
+            params_to_optimize = [
+                unet_lora_parameters_with_lr,
+                text_lora_parameters_with_lr,
+            ]
+        else:
+            params_to_optimize = [unet_lora_parameters_with_lr] 
+    
     
     optimizer = optimizer_class(
         params_to_optimize,
@@ -1013,7 +1061,7 @@ def main(args):
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
     )
-
+        
     if args.pre_compute_text_embeddings:
         def compute_text_embeddings(prompt):
             with torch.no_grad():
@@ -1052,7 +1100,7 @@ def main(args):
         pre_computed_class_prompt_encoder_hidden_states = None
 
     # Dataset and DataLoaders creation:
-    train_dataset = DreamBoothDataset(
+    train_dataset = KolorsDataset(
         instance_data_root=args.instance_data_dir,
         instance_prompt=args.instance_prompt,
         class_data_root=args.class_data_dir if args.with_prior_preservation else None,
@@ -1298,8 +1346,12 @@ def main(args):
                                     shutil.rmtree(removing_checkpoint, onerror=handle_remove_error)
 
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        # accelerator.save_state(save_path)
-                        save_model_hook(super_model, save_path)
+
+                        if args.train_text_encoder:
+                            save_model_hook(super_model, save_path)
+                        else:
+                            save_model_hook_no_text(super_model, save_path)
+                            
                         logger.info(f"Saved state to {save_path}")
 
             loss_list.append(loss.detach().item())
@@ -1326,7 +1378,12 @@ def main(args):
         wandb.finish()
 
     save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-    save_model_hook(super_model, save_path)
+
+    if args.train_text_encoder:
+        save_model_hook(super_model, save_path)
+    else:
+        save_model_hook_no_text(super_model, save_path)
+
     accelerator.end_training()
     exit()
 
