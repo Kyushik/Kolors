@@ -1,6 +1,6 @@
 MODEL_NAME="./weights/Kolors"
-INSTANCE_DIR='dataset/EkuUekura'
-OUTPUT_DIR="./trained_models/EkuUekura_lora_noTextTrain_1024_rank32"
+INSTANCE_DIR='dataset/dog'
+OUTPUT_DIR="./trained_models/dog_lora"
 cfg_file=training/default_config.yaml
 
 accelerate launch --config_file ${cfg_file} training/train.py \
@@ -14,7 +14,7 @@ accelerate launch --config_file ${cfg_file} training/train.py \
     --lr_warmup_steps=500 \
     --rank=32 \
     --resolution=1024 \
-    --max_train_steps=5000 \
+    --max_train_steps=1000 \
     --checkpointing_steps=1000 \
     --center_crop \
     --mixed_precision='fp16' \
