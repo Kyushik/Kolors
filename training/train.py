@@ -23,6 +23,7 @@ import math
 import os
 import shutil
 import warnings
+import json
 from pathlib import Path
 
 import numpy as np
@@ -950,8 +951,12 @@ def main(args):
                 StableDiffusionXLPipeline.save_lora_weights(output_dir, unet_lora_layers=unet_lora_layers_to_save)
 
                 # Save the adapter.json (LoRA configuration)
-                lora_config = models.unet.config.to_dict()  # Assuming LoRA config is in model config
-                with open(f"{output_dir}/adapter.json", "w") as f:
+                lora_config = models.unet.peft_config['default'].to_dict() 
+
+                lora_config['target_modules'] = list(lora_config['target_modules'])
+                lora_config['peft_type'] = str(lora_config['peft_type'].value) 
+            
+                with open(f"{output_dir}/adapter_config.json", "w") as f:
                     json.dump(lora_config, f, indent=2)
             else:
                 # Save the full UNet model weights
