@@ -399,7 +399,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--rank",
         type=int,
-        default=4,
+        default=16,
         help=("The dimension of the LoRA update matrices."),
     )
 
@@ -1047,11 +1047,11 @@ def main(args):
                 "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate,
             }
             params_to_optimize = [
-                unet_lora_parameters_with_lr,
-                text_lora_parameters_with_lr,
+                unet_parameters_with_lr,
+                text_parameters_with_lr,
             ]
         else:
-            params_to_optimize = [unet_lora_parameters_with_lr] 
+            params_to_optimize = [unet_parameters_with_lr] 
     
     
     optimizer = optimizer_class(
@@ -1308,11 +1308,18 @@ def main(args):
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = (
-                        itertools.chain(unet_lora_parameters, text_lora_parameters)
-                        if args.train_text_encoder
-                        else unet_lora_parameters
-                    )
+                    if args.train_lora:
+                        params_to_clip = (
+                            itertools.chain(unet_lora_parameters, text_lora_parameters)
+                            if args.train_text_encoder
+                            else unet_lora_parameters
+                        )
+                    else:
+                        params_to_clip = (
+                            itertools.chain(unet_parameters, text_parameters)
+                            if args.train_text_encoder
+                            else unet_parameters
+                        )                        
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
