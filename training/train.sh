@@ -1,6 +1,6 @@
 MODEL_NAME="./weights/Kolors"
-INSTANCE_DIR='dataset/EkuUekura'
-OUTPUT_DIR="./trained_models/EkuUekura_full"
+INSTANCE_DIR='dataset/dog'
+OUTPUT_DIR="./trained_models/dog"
 cfg_file=training/default_config.yaml
 
 accelerate launch --config_file ${cfg_file} training/train.py \
